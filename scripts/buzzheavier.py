@@ -4,10 +4,13 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from curl_cffi import CurlOpt, requests
+from curl_cffi.requests.exceptions import RequestException
 
 from scripts.common import AutomationError, check_space, progress, show_disk
 
 BASE = "https://buzzheavier.com"
+# Public download pages only; the authenticated folder API remains on BASE.
+DOWNLOAD_ORIGINS = (BASE, "https://bzzhr.co", "https://bzzhr.to")
 
 
 def parse_links(value):
@@ -99,10 +102,9 @@ def read_file_page(client, page_url):
         page.close()
 
 
-def resolve_download(client, file_id):
-    page_url = f"{BASE}/{file_id}"
+def resolve_from_origin(client, file_id, origin):
+    page_url = f"{origin}/{file_id}"
     body = read_file_page(client, page_url)
-
     token = re.search(r'download\?t=([^"\x27&\\#<>\s]+)', body)
     if not token:
         raise AutomationError("Buzzheavier download token missing (possibly a challenge)")
@@ -111,18 +113,40 @@ def resolve_download(client, file_id):
         response = client.get(endpoint, headers={
             "HX-Request": "true", "HX-Current-URL": page_url, "Referer": page_url,
         }, allow_redirects=False, timeout=30)
-        if response.status_code >= 400:
-            continue
-        destination = response.headers.get("HX-Redirect") or response.headers.get("Location")
-        if not destination:
-            match = re.search(r'https?://[^\s"\x27<>]+/d/[^\s"\x27<>]+', response.text)
-            destination = match.group(0) if match else None
-        if destination:
-            url = urljoin(endpoint, destination)
-            parsed = urlparse(url)
-            if parsed.scheme == "https" and parsed.hostname and not parsed.username:
-                return url
+        try:
+            if response.status_code >= 400:
+                continue
+            destination = response.headers.get("HX-Redirect") or response.headers.get("Location")
+            if not destination:
+                match = re.search(r'https?://[^\s"\x27<>]+/d/[^\s"\x27<>]+', response.text)
+                destination = match.group(0) if match else None
+            if destination:
+                url = urljoin(endpoint, destination)
+                parsed = urlparse(url)
+                if parsed.scheme == "https" and parsed.hostname and not parsed.username:
+                    return url
+        finally:
+            response.close()
     raise AutomationError("Buzzheavier did not provide an HTTPS download URL")
+
+
+def resolve_download(client, file_id):
+    failures = []
+    for origin in DOWNLOAD_ORIGINS:
+        host = urlparse(origin).hostname
+        progress(f"Trying Buzzheavier download page via {host}")
+        try:
+            return resolve_from_origin(client, file_id, origin)
+        except AutomationError as error:
+            # These errors are deliberately constructed without URL tokens/body.
+            reason = str(error)
+        except RequestException:
+            # curl exceptions may expose signed URLs; keep them out of logs.
+            reason = "network request failed"
+        failures.append(f"{host}: {reason}")
+        progress(f"Download page unavailable via {host}: {reason}")
+    raise AutomationError("All official Buzzheavier download entries failed; " + "; ".join(failures))
+
 
 
 def file_name(entry, used):

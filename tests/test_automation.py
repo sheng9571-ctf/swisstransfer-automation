@@ -56,6 +56,52 @@ class FilePageTests(unittest.TestCase):
 
 
 
+class MirrorTests(unittest.TestCase):
+    def test_falls_back_in_official_order(self):
+        with patch.object(buzzheavier, "resolve_from_origin", side_effect=[
+                AutomationError("HTTP 403 challenge"), AutomationError("HTTP 403 challenge"),
+                "https://cdn.example/d/file?v=private"]) as resolve:
+            self.assertEqual(buzzheavier.resolve_download(Mock(), "file"),
+                             "https://cdn.example/d/file?v=private")
+        self.assertEqual([call.args[2] for call in resolve.call_args_list],
+                         list(buzzheavier.DOWNLOAD_ORIGINS))
+
+    def test_success_on_primary_does_not_try_mirrors(self):
+        with patch.object(buzzheavier, "resolve_from_origin",
+                          return_value="https://cdn.example/d/file") as resolve:
+            buzzheavier.resolve_download(Mock(), "file")
+            resolve.assert_called_once()
+            self.assertEqual(resolve.call_args.args[2], buzzheavier.BASE)
+
+    def test_network_errors_do_not_leak_tokens(self):
+        from curl_cffi.requests.exceptions import RequestException
+        output = io.StringIO()
+        with patch.object(buzzheavier, "resolve_from_origin",
+                          side_effect=RequestException("SECRET_SIGNED_URL")), \
+                contextlib.redirect_stdout(output):
+            with self.assertRaises(AutomationError) as caught:
+                buzzheavier.resolve_download(Mock(), "file")
+        self.assertNotIn("SECRET_SIGNED_URL", output.getvalue() + str(caught.exception))
+        for origin in buzzheavier.DOWNLOAD_ORIGINS:
+            self.assertIn(origin.split("//")[1], str(caught.exception))
+
+    def test_mirror_endpoint_headers_have_no_credentials(self):
+        response = Mock(status_code=200, headers={"HX-Redirect": "https://cdn.example/d/file"})
+        client = Mock()
+        client.get.return_value = response
+        with patch.object(buzzheavier, "read_file_page",
+                          return_value='<html><a href="download?t=token">Download</a></html>') as page:
+            result = buzzheavier.resolve_from_origin(client, "file", "https://bzzhr.co")
+        self.assertEqual(result, "https://cdn.example/d/file")
+        page.assert_called_once_with(client, "https://bzzhr.co/file")
+        headers = client.get.call_args.kwargs["headers"]
+        self.assertNotIn("Authorization", headers)
+        self.assertEqual(headers["HX-Current-URL"], "https://bzzhr.co/file")
+        self.assertEqual(headers["Referer"], "https://bzzhr.co/file")
+        response.close.assert_called_once()
+
+
+
 class DownloadTests(unittest.TestCase):
     def test_folder_links_and_invalid_host(self):
         self.assertEqual(len(buzzheavier.parse_links(" \nhttps://buzzheavier.com/fs/abc123\n")), 1)
