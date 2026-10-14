@@ -1,0 +1,87 @@
+name: Buzzheavier to SwissTransfer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swisstransfer-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Check input
+        id: input
+        env:
+          BUZZHEAVIER_LINKS: ${{ secrets.BUZZHEAVIER_LINKS }}
+        run: |
+          python3 - <<'PY'
+          import os
+          enabled = bool(os.environ.get("BUZZHEAVIER_LINKS", "").strip())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"enabled={str(enabled).lower()}\n")
+          if not enabled:
+              print("BUZZHEAVIER_LINKS is empty; skipping download and upload")
+          PY
+
+      - name: Free disk space
+        if: steps.input.outputs.enabled == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache || true
+          docker system prune -af || true
+          docker builder prune -af || true
+          df -h
+          docker system df || true
+
+      - name: Checkout
+        if: steps.input.outputs.enabled == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        if: steps.input.outputs.enabled == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.14'
+
+      - name: Install Python dependencies
+        if: steps.input.outputs.enabled == 'true'
+        run: python -m pip install -r requirements.txt
+
+      - name: Test automation
+        if: steps.input.outputs.enabled == 'true'
+        run: python -m unittest discover -s tests -v
+
+      - name: Download and upload
+        if: steps.input.outputs.enabled == 'true'
+        env:
+          BUZZHEAVIER_LINKS: ${{ secrets.BUZZHEAVIER_LINKS }}
+          BUZZHEAVIER_ACCOUNT_ID: ${{ secrets.BUZZHEAVIER_ACCOUNT_ID }}
+          SWISS_EMAIL: ${{ secrets.SWISS_EMAIL }}
+          MAILSLURP_API_KEY: ${{ secrets.MAILSLURP_API_KEY }}
+          MAILSLURP_INBOX_ID: ${{ secrets.MAILSLURP_INBOX_ID }}
+          SWISSFER_VERSION: ${{ vars.SWISSFER_VERSION || '3.0.0' }}
+          SWISSFER_DURATION_DAYS: ${{ vars.SWISSFER_DURATION_DAYS || '30' }}
+          SWISSFER_MAX_DOWNLOADS: ${{ vars.SWISSFER_MAX_DOWNLOADS || '20' }}
+          PYTHONUNBUFFERED: '1'
+        run: python -m scripts.run
+
+      - name: Save share link
+        if: success() && steps.input.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: swisstransfer-result
+          path: |
+            results/share-link.txt
+            results/result.json
+          if-no-files-found: error
+          retention-days: 7
