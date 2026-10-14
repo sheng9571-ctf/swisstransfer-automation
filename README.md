@@ -134,3 +134,13 @@ References:
 [Actions product terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features),
 [MailSlurp OpenAPI](https://api.mailslurp.com/v2/api-docs),
 [swissfer 3.0.0 source](https://github.com/Blutsh/swissfer/tree/3.0.0).
+
+### Official download-entry fallback
+
+For each file, the public download-page resolver tries `buzzheavier.com`, then
+`bzzhr.co`, then `bzzhr.to`, as listed on https://buzzheavier.com/proxy.
+It logs each host's safe failure reason without page bodies or signed URL tokens.
+The account Bearer credential is used only for the folder API on buzzheavier.com.
+This fallback applies before file downloading begins; file-body failures still
+stop the batch rather than retrying or silently uploading incomplete files.
+Mirror availability on GitHub-hosted runners remains to be verified in Actions.
