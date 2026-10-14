@@ -16,6 +16,46 @@ from scripts.run import main
 LINK = "https://www.swisstransfer.com/dl/01a1392e-5737-7317-a781-e63eb4f11a28"
 
 
+class FilePageTests(unittest.TestCase):
+    def response(self, status=200, headers=None, text=""):
+        response = Mock(status_code=status, headers=headers or {}, text=text)
+        client = Mock()
+        client.get.return_value = response
+        return client, response
+
+    def test_http_error_reports_status_without_body(self):
+        for status in (403, 404, 429, 503):
+            client, response = self.response(status, text="SECRET_DOWNLOAD_TOKEN")
+            with self.assertRaises(AutomationError) as caught:
+                buzzheavier.read_file_page(client, "https://buzzheavier.com/file")
+            self.assertIn(f"HTTP {status}", str(caught.exception))
+            self.assertNotIn("SECRET_DOWNLOAD_TOKEN", str(caught.exception))
+            response.close.assert_called_once()
+
+    def test_challenge_is_distinct_from_normal_html(self):
+        for headers, body in (
+                ({"cf-mitigated": "challenge"}, "SECRET"),
+                ({"content-type": "text/html"}, "<html><title>Just a moment...</title>")):
+            client, response = self.response(403, headers, body)
+            with self.assertRaisesRegex(AutomationError, "anti-bot challenge"):
+                buzzheavier.read_file_page(client, "https://buzzheavier.com/file")
+            response.close.assert_called_once()
+
+    def test_missing_or_mislabelled_type_accepts_html_document(self):
+        for headers in ({}, {"content-type": "text/plain"}):
+            body = '<!DOCTYPE html><html>download?t=secret</html>'
+            client, response = self.response(200, headers, body)
+            self.assertEqual(buzzheavier.read_file_page(client, "https://buzzheavier.com/file"), body)
+            response.close.assert_called_once()
+
+    def test_non_html_is_rejected(self):
+        client, response = self.response(200, {"content-type": "application/json"}, '{"secret": "token"}')
+        with self.assertRaisesRegex(AutomationError, "JSON"):
+            buzzheavier.read_file_page(client, "https://buzzheavier.com/file")
+        response.close.assert_called_once()
+
+
+
 class DownloadTests(unittest.TestCase):
     def test_folder_links_and_invalid_host(self):
         self.assertEqual(len(buzzheavier.parse_links(" \nhttps://buzzheavier.com/fs/abc123\n")), 1)

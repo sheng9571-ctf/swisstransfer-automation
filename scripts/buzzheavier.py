@@ -60,12 +60,50 @@ def collect(client, account_id, links):
     return list(found.values())
 
 
+def read_file_page(client, page_url):
+    page = client.get(page_url, timeout=30)
+    try:
+        status = page.status_code
+        content_type = page.headers.get("content-type", "").lower()
+        body = page.text
+        challenge = (
+            page.headers.get("cf-mitigated", "").lower() == "challenge"
+            or "<title>just a moment" in body.lower()
+            or "<title>attention required" in body.lower()
+        )
+        if challenge:
+            raise AutomationError(
+                f"Buzzheavier file page blocked by an anti-bot challenge (HTTP {status}); "
+                "the runner could not obtain a normal download page"
+            )
+        if status != 200:
+            reasons = {
+                403: "access forbidden; runner IP or file access may be restricted",
+                404: "file page not found; file may have expired or been removed",
+                429: "remote rate limit reached",
+            }
+            reason = reasons.get(status, "remote server did not return a successful file page")
+            raise AutomationError(f"Buzzheavier file page failed (HTTP {status}): {reason}")
+        # Some working HTML pages omit or mislabel Content-Type. Require an
+        # actual HTML document signature before allowing that fallback.
+        html_document = re.match(r"\s*(?:<!doctype\s+html\b|<html\b)", body, re.I)
+        if "text/html" not in content_type and not html_document:
+            kind = ("missing" if not content_type else
+                    "JSON" if "json" in content_type else "non-HTML")
+            raise AutomationError(
+                f"Buzzheavier file page returned HTTP 200 with {kind} Content-Type "
+                "and no HTML document"
+            )
+        return body
+    finally:
+        page.close()
+
+
 def resolve_download(client, file_id):
     page_url = f"{BASE}/{file_id}"
-    page = client.get(page_url, timeout=30)
-    if page.status_code != 200 or "text/html" not in page.headers.get("content-type", "").lower():
-        raise AutomationError("Buzzheavier file page could not be loaded")
-    token = re.search(r'download\?t=([^"\x27&\\#<>\s]+)', page.text)
+    body = read_file_page(client, page_url)
+
+    token = re.search(r'download\?t=([^"\x27&\\#<>\s]+)', body)
     if not token:
         raise AutomationError("Buzzheavier download token missing (possibly a challenge)")
     for suffix in ("", "&alt=true"):
